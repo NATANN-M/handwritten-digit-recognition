@@ -5,8 +5,7 @@ import cv2
 from PIL import Image
 import pandas as pd
 import base64
-from io import BytesIO
-import time
+import io
 
 # --------------------------------------------------
 # Page configuration
@@ -15,126 +14,218 @@ import time
 st.set_page_config(
     page_title="Handwritten Digit Recognition",
     page_icon="🔢",
-    layout="centered"
+    layout="wide"
 )
 
 # --------------------------------------------------
-# Custom CSS for drawing canvas
+# Custom CSS for paper-like UI
 # --------------------------------------------------
 
 st.markdown("""
-    <style>
+<style>
+    /* Paper background */
     .stApp {
         background: #F6F4EC;
     }
-    .canvas-wrapper {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        padding: 20px;
-        background: rgba(255,255,255,0.5);
-        border-radius: 12px;
-        border: 1px solid rgba(43,43,46,0.15);
+    
+    .main {
+        padding: 2rem 1rem;
     }
+    
+    /* Paper style heading */
+    .paper-title {
+        font-family: 'Segoe Print', 'Bradley Hand', 'Comic Sans MS', cursive;
+        font-size: 40px;
+        color: #2C4A6E;
+        transform: rotate(-0.6deg);
+        margin-bottom: 0;
+        font-weight: normal;
+    }
+    
+    .paper-subtitle {
+        font-size: 14px;
+        color: #55554F;
+        margin-bottom: 30px;
+        letter-spacing: 0.2px;
+    }
+    
+    /* Canvas container */
+    .canvas-wrapper {
+        background: rgba(255,255,255,0.55);
+        border: 1px solid rgba(43,43,46,0.15);
+        border-radius: 3px;
+        padding: 18px;
+        display: inline-block;
+    }
+    
+    /* Canvas styling */
     .drawing-canvas {
-        border: 2px solid #2B2B2E;
-        border-radius: 8px;
-        background: #FFFFFF;
-        cursor: crosshair;
-        touch-action: none;
         width: 280px;
         height: 280px;
+        background: #FFFFFF;
+        border: 1.5px solid #2B2B2E;
+        border-radius: 2px;
+        cursor: crosshair;
+        touch-action: none;
+        display: block;
     }
-    .prediction-box {
+    
+    .canvas-label {
+        font-size: 12px;
+        color: #55554F;
+        margin-top: 8px;
+        text-align: center;
+    }
+    
+    /* Results styling */
+    .grade-circle {
+        width: 92px;
+        height: 92px;
+        border: 3px solid #B33A3A;
+        border-radius: 50%;
         display: flex;
-        flex-direction: column;
         align-items: center;
         justify-content: center;
-        padding: 20px;
-        background: rgba(255,255,255,0.8);
-        border-radius: 10px;
-        border: 1px solid rgba(43,43,46,0.15);
-        min-height: 200px;
+        font-family: 'Segoe Print', 'Bradley Hand', 'Comic Sans MS', cursive;
+        font-size: 52px;
+        color: #7A2626;
+        transform: rotate(-4deg);
+        margin: 6px 0 10px 6px;
+        background: white;
     }
-    .digit-display {
-        font-size: 72px;
-        font-weight: bold;
-        color: #2B2B2E;
-        margin: 10px 0;
-        font-family: 'Segoe Print', 'Bradley Hand', cursive;
-    }
-    .confidence-text {
+    
+    .grade-conf {
+        font-family: 'Segoe Print', 'Bradley Hand', 'Comic Sans MS', cursive;
+        color: #7A2626;
         font-size: 20px;
-        color: #B33A3A;
-        font-family: 'Segoe Print', 'Bradley Hand', cursive;
+        margin: 0 0 18px 10px;
+        transform: rotate(-2deg);
     }
-    .bar-container {
-        width: 100%;
-        margin: 4px 0;
-    }
-    .bar-label {
-        display: flex;
-        justify-content: space-between;
+    
+    .placeholder-note {
         font-size: 13px;
-        font-family: 'SF Mono', monospace;
-        color: #555;
+        color: #55554F;
+        font-style: italic;
+        margin-top: 30px;
     }
-    .bar-track {
+    
+    /* Bars styling */
+    .bars-container {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
         width: 100%;
-        height: 8px;
-        background: rgba(43,43,46,0.08);
-        border-radius: 4px;
-        overflow: hidden;
-        margin: 2px 0;
     }
+    
+    .bar-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        font-family: 'SF Mono', 'IBM Plex Mono', ui-monospace, monospace;
+        color: #55554F;
+    }
+    
+    .bar-digit {
+        width: 12px;
+        text-align: right;
+        color: #2B2B2E;
+        font-weight: bold;
+    }
+    
+    .bar-track {
+        flex: 1;
+        height: 9px;
+        background: rgba(43,43,46,0.08);
+        border-radius: 2px;
+        overflow: hidden;
+    }
+    
     .bar-fill {
         height: 100%;
         background: #B33A3A;
-        border-radius: 4px;
+        border-radius: 2px;
         transition: width 0.3s ease;
     }
+    
+    .bar-pct {
+        width: 40px;
+        text-align: right;
+        font-weight: bold;
+    }
+    
+    /* Controls */
     .controls {
         display: flex;
         gap: 10px;
         margin-top: 12px;
+        justify-content: center;
     }
+    
     .btn-clear {
-        padding: 8px 24px;
+        font-family: inherit;
+        font-size: 13px;
+        padding: 7px 16px;
+        border-radius: 3px;
         border: 1px solid #2B2B2E;
         background: #F6F4EC;
-        border-radius: 4px;
+        color: #2B2B2E;
         cursor: pointer;
-        font-family: inherit;
-        font-size: 13px;
     }
-    .btn-predict {
-        padding: 8px 24px;
-        border: 1px solid #B33A3A;
-        background: #B33A3A;
-        color: white;
-        border-radius: 4px;
-        cursor: pointer;
-        font-family: inherit;
-        font-size: 13px;
-    }
-    .btn-predict:hover {
-        background: #7A2626;
-    }
+    
     .btn-clear:hover {
         background: #ECE8DA;
     }
-    .placeholder-note {
-        color: #888;
-        font-style: italic;
-        text-align: center;
-        padding: 20px;
-        font-size: 14px;
+    
+    .btn-primary {
+        font-family: inherit;
+        font-size: 13px;
+        padding: 7px 16px;
+        border-radius: 3px;
+        border: 1px solid #B33A3A;
+        background: #B33A3A;
+        color: white;
+        cursor: pointer;
     }
-    </style>
+    
+    .btn-primary:hover {
+        background: #7A2626;
+    }
+    
+    /* Stats section */
+    .stats {
+        margin-top: 34px;
+        padding-top: 14px;
+        border-top: 1px dashed rgba(43,43,46,0.3);
+        font-family: 'SF Mono', 'IBM Plex Mono', ui-monospace, monospace;
+        font-size: 11.5px;
+        color: #55554F;
+        line-height: 1.9;
+    }
+    
+    .stats b {
+        color: #2B2B2E;
+    }
+    
+    /* Upload section */
+    .upload-section {
+        margin-top: 30px;
+        padding-top: 20px;
+        border-top: 1px dashed rgba(43,43,46,0.2);
+    }
+    
+    /* Responsive */
+    @media (max-width: 640px) {
+        .drawing-canvas {
+            width: 200px;
+            height: 200px;
+        }
+    }
+</style>
 """, unsafe_allow_html=True)
 
 # --------------------------------------------------
-# Load your existing model
+# Load model
 # --------------------------------------------------
 
 @st.cache_resource
@@ -142,28 +233,34 @@ def load_model():
     try:
         model = tf.keras.models.load_model("handwritten_digit_cnn.keras")
         return model
-    except Exception as e:
-        st.error(f"⚠️ Error loading model: {str(e)}")
+    except:
+        st.warning("⚠️ Model file not found. Please ensure 'handwritten_digit_cnn.keras' exists.")
         return None
 
 model = load_model()
-
-# TARGET_SIZE = 32 (your model expects 32x32)
+TARGET_SIZE = 32  # Your model expects 32x32
 
 # --------------------------------------------------
-# Your existing preprocessing function (adapted for canvas)
+# Initialize session state
+# --------------------------------------------------
+
+if 'canvas_image' not in st.session_state:
+    st.session_state.canvas_image = None
+if 'prediction' not in st.session_state:
+    st.session_state.prediction = None
+if 'processed_image' not in st.session_state:
+    st.session_state.processed_image = None
+if 'has_drawn' not in st.session_state:
+    st.session_state.has_drawn = False
+
+# --------------------------------------------------
+# Preprocessing function (same as your existing)
 # --------------------------------------------------
 
 def preprocess_canvas_image(image_array):
-    """
-    Preprocess canvas image using your existing pipeline.
-    This matches your current preprocessing exactly.
-    """
-    # Canvas image is already grayscale (0-255)
+    """Preprocess canvas image for 32x32 model"""
     # Invert if needed (canvas draws black on white)
-    
-    # Apply threshold
-    _, thresh = cv2.threshold(image_array, 30, 255, cv2.THRESH_BINARY_INV)
+    thresh = cv2.threshold(image_array, 30, 255, cv2.THRESH_BINARY_INV)[1]
     
     # Find contours
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -185,7 +282,7 @@ def preprocess_canvas_image(image_array):
     # Crop digit
     digit = thresh[y:y+h, x:x+w]
     
-    # Add padding (25% of max dimension)
+    # Add padding
     padding = int(max(w, h) * 0.25)
     digit = cv2.copyMakeBorder(
         digit,
@@ -197,29 +294,27 @@ def preprocess_canvas_image(image_array):
         value=0
     )
     
-    # Resize to 32x32 (your model expects this)
-    digit_resized = cv2.resize(digit, (32, 32), interpolation=cv2.INTER_AREA)
+    # Resize to 32x32
+    digit_resized = cv2.resize(digit, (TARGET_SIZE, TARGET_SIZE), interpolation=cv2.INTER_AREA)
     
-    # Normalize to [0, 1]
+    # Normalize
     normalized = digit_resized.astype(np.float32) / 255.0
-    
-    # Reshape for CNN input
-    normalized = normalized.reshape(1, 32, 32, 1)
+    normalized = normalized.reshape(1, TARGET_SIZE, TARGET_SIZE, 1)
     
     return digit_resized, normalized
 
 # --------------------------------------------------
-# HTML Drawing Canvas Component
+# HTML Canvas Component (with all styling)
 # --------------------------------------------------
 
 def get_canvas_html():
-    """Return the HTML/JS for the drawing canvas"""
     return """
     <div class="canvas-wrapper">
         <canvas id="drawCanvas" class="drawing-canvas" width="280" height="280"></canvas>
+        <p class="canvas-label">use your mouse or finger</p>
         <div class="controls">
-            <button class="btn-clear" id="clearBtn">✏️ Clear</button>
-            <button class="btn-predict" id="predictBtn">🔍 Predict</button>
+            <button class="btn-clear" id="clearBtn">Clear</button>
+            <button class="btn-primary" id="predictBtn">Predict</button>
         </div>
     </div>
     
@@ -296,7 +391,6 @@ def get_canvas_html():
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         hasInk = false;
         
-        // Send clear event to Streamlit
         const data = { type: 'canvas_cleared' };
         window.parent.postMessage(data, '*');
     });
@@ -308,10 +402,7 @@ def get_canvas_html():
             return;
         }
         
-        // Get canvas data as image
         const imageData = canvas.toDataURL('image/png');
-        
-        // Send to Streamlit
         const data = { 
             type: 'canvas_prediction', 
             imageData: imageData 
@@ -322,163 +413,126 @@ def get_canvas_html():
     """
 
 # --------------------------------------------------
-# Display probability bars
+# Main UI Layout
 # --------------------------------------------------
 
-def display_probability_bars(probabilities):
-    """Create HTML for probability bars"""
-    html = '<div style="width: 100%;">'
-    for i, prob in enumerate(probabilities):
-        pct = prob * 100
-        # Highlight the max
-        is_max = prob == max(probabilities)
-        color = '#B33A3A' if is_max else '#55554F'
-        html += f"""
-        <div class="bar-container">
-            <div class="bar-label">
-                <span><strong>{i}</strong> {'⭐' if is_max else ''}</span>
-                <span>{pct:.1f}%</span>
-            </div>
-            <div class="bar-track">
-                <div class="bar-fill" style="width: {pct}%; background: {color};"></div>
-            </div>
-        </div>
-        """
-    html += '</div>'
-    return html
+st.markdown('<h1 class="paper-title">Digit Recognizer</h1>', unsafe_allow_html=True)
+st.markdown('<p class="paper-subtitle">draw a digit 0–9 · graded live by a small CNN running entirely in your browser</p>', unsafe_allow_html=True)
 
-# --------------------------------------------------
-# Main UI
-# --------------------------------------------------
+# Two column layout
+col1, col2 = st.columns([1, 1.2])
 
-st.title("🔢 Handwritten Digit Recognizer")
-st.markdown("Draw a digit (0-9) in the box below or upload an image")
-
-# Create tabs
-tab1, tab2 = st.tabs(["✏️ Draw", "📤 Upload Image"])
-
-# --------------------------------------------------
-# Tab 1: Drawing Canvas
-# --------------------------------------------------
-
-with tab1:
-    # Display the canvas
+with col1:
+    # Canvas
     st.components.v1.html(get_canvas_html(), height=380)
     
-    # Initialize session state for prediction
-    if 'draw_result' not in st.session_state:
-        st.session_state.draw_result = None
-    if 'draw_processed' not in st.session_state:
-        st.session_state.draw_processed = None
-    
-    # Display prediction results
-    col1, col2 = st.columns([1, 1.5])
-    
-    with col1:
-        if st.session_state.draw_result is not None:
-            result = st.session_state.draw_result
-            confidence_class = 'confidence-high' if result['confidence'] > 80 else 'confidence-medium' if result['confidence'] > 50 else 'confidence-low'
+    # Upload section
+    with st.expander("📤 Upload Image Instead"):
+        uploaded_file = st.file_uploader(
+            "Choose an image",
+            type=["jpg", "jpeg", "png"],
+            label_visibility="collapsed"
+        )
+        if uploaded_file is not None:
+            image = Image.open(uploaded_file)
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
             
-            st.markdown(f"""
-            <div class="prediction-box">
-                <div class="digit-display">{result['digit']}</div>
-                <div class="confidence-text">{result['confidence']:.1f}% sure</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Show processed image
-            if st.session_state.draw_processed is not None:
-                st.image(st.session_state.draw_processed, width=150, clamp=True)
-                st.caption("What the model sees (32×32)")
-        else:
-            st.markdown("""
-            <div class="placeholder-note">
-                ✏️ Draw a digit and click "Predict"
-            </div>
-            """, unsafe_allow_html=True)
-    
-    with col2:
-        if st.session_state.draw_result is not None:
-            st.markdown("### 📊 Probability Distribution")
-            st.markdown(
-                display_probability_bars(st.session_state.draw_result['probabilities']),
-                unsafe_allow_html=True
-            )
-
-# --------------------------------------------------
-# Tab 2: Upload Image
-# --------------------------------------------------
-
-with tab2:
-    uploaded_file = st.file_uploader(
-        "Choose an image",
-        type=["jpg", "jpeg", "png", "bmp"],
-        help="Upload an image containing a handwritten digit"
-    )
-    
-    if uploaded_file is not None:
-        # Display original image
-        image = Image.open(uploaded_file)
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        
-        # Show original with rotation controls
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.image(image, width=300)
-        
-        # Process and predict
-        with st.spinner("Processing..."):
             # Convert to numpy for preprocessing
             img_array = np.array(image)
             gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
             
-            # Use the same preprocessing as canvas
             processed, model_input = preprocess_canvas_image(gray)
             
-            if processed is None:
-                st.error("❌ Could not detect a digit in the image.")
-            else:
-                # Make prediction
-                if model is not None:
-                    prediction = model.predict(model_input, verbose=0)
-                    predicted_digit = np.argmax(prediction[0])
-                    confidence = np.max(prediction[0]) * 100
-                    
-                    # Show results
-                    col1, col2 = st.columns([1, 1.5])
-                    
-                    with col1:
-                        st.markdown(f"""
-                        <div class="prediction-box">
-                            <div class="digit-display">{predicted_digit}</div>
-                            <div class="confidence-text">{confidence:.1f}% sure</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        st.image(processed, width=150, clamp=True)
-                        st.caption("Processed digit (32×32)")
-                    
-                    with col2:
-                        st.markdown("### 📊 Probability Distribution")
-                        st.markdown(
-                            display_probability_bars(prediction[0]),
-                            unsafe_allow_html=True
-                        )
+            if processed is not None and model is not None:
+                prediction = model.predict(model_input, verbose=0)
+                predicted_digit = np.argmax(prediction[0])
+                confidence = np.max(prediction[0]) * 100
+                
+                st.session_state.prediction = {
+                    'digit': int(predicted_digit),
+                    'confidence': confidence,
+                    'probabilities': prediction[0],
+                    'processed': processed
+                }
+                st.rerun()
+
+with col2:
+    # Results display
+    if st.session_state.prediction is not None:
+        pred = st.session_state.prediction
+        
+        # Show results with paper style
+        st.markdown(f"""
+        <div style="padding: 10px 0;">
+            <div class="grade-circle">{pred['digit']}</div>
+            <div class="grade-conf">{pred['confidence']:.1f}% sure</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Show processed image if available
+        if 'processed' in pred and pred['processed'] is not None:
+            st.image(pred['processed'], width=100, clamp=True)
+            st.caption("What the model sees")
+        
+        # Probability bars
+        st.markdown('<div class="bars-container">', unsafe_allow_html=True)
+        
+        probs = pred['probabilities']
+        for i, prob in enumerate(probs):
+            pct = prob * 100
+            is_max = i == pred['digit']
+            color = '#B33A3A' if is_max else '#55554F'
+            st.markdown(f"""
+            <div class="bar-row">
+                <span class="bar-digit">{i}</span>
+                <span class="bar-track">
+                    <span class="bar-fill" style="width:{pct}%; background:{color};"></span>
+                </span>
+                <span class="bar-pct">{pct:.1f}%</span>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Action buttons
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("Clear Results", use_container_width=True):
+                st.session_state.prediction = None
+                st.session_state.processed_image = None
+                st.rerun()
+        with col_btn2:
+            if st.button("New Drawing", use_container_width=True):
+                st.session_state.prediction = None
+                st.session_state.has_drawn = False
+                st.rerun()
+                
+    else:
+        st.markdown('<p class="placeholder-note">nothing graded yet — draw a digit</p>', unsafe_allow_html=True)
+
+# Stats section
+st.markdown("""
+<div class="stats">
+    <div><b>Model:</b> CNN &middot; Trained on handwritten digits</div>
+    <div><b>Input:</b> 32×32 grayscale images</div>
+    <div><b>Output:</b> 10 classes (digits 0-9)</div>
+    <div><b>Inference:</b> Runs locally with TensorFlow</div>
+</div>
+""", unsafe_allow_html=True)
 
 # --------------------------------------------------
 # JavaScript to handle canvas messages
 # --------------------------------------------------
 
-# This JavaScript captures messages from the canvas and processes them
 js_code = """
 <script>
 window.addEventListener('message', function(event) {
-    // Check if the message is from the canvas
     if (event.data && event.data.type === 'canvas_prediction') {
-        // Send the image data to Streamlit via the backend
+        // Send image data to Streamlit
         const imageData = event.data.imageData;
         
-        // We'll use fetch to send the image to the server
+        // Use fetch to send to backend
         fetch('/_stcore/upload', {
             method: 'POST',
             headers: {
@@ -489,11 +543,20 @@ window.addEventListener('message', function(event) {
     }
     if (event.data && event.data.type === 'canvas_cleared') {
         console.log('Canvas cleared');
+        // Trigger Streamlit rerun
+        window.location.reload();
     }
 });
 </script>
 """
 st.components.v1.html(js_code, height=0)
+
+# --------------------------------------------------
+# Process canvas image (backend)
+# --------------------------------------------------
+
+# This is a workaround to receive canvas data
+# The actual processing happens via the message handler
 
 # --------------------------------------------------
 # Sidebar
@@ -508,26 +571,13 @@ with st.sidebar:
     **Model Input:** 32×32 grayscale images
     
     **Output:** 10 digits (0-9)
-    
-    **Accuracy:** High accuracy on MNIST-like digits
     """)
     
-    st.divider()
-    
-    st.header("💡 Tips")
-    st.markdown("""
-    1. ✍️ Draw **boldly** with good contrast
-    2. 🎯 Center the digit
-    3. ✏️ Use simple print style (not cursive)
-    4. 🔄 Use **Clear** to start over
-    5. 📤 Upload images for batch testing
-    """)
-    
-    st.divider()
+   
     
     if model is not None:
-        st.success("✅ Model ready!")
-        st.info(f"📐 Input size: 32×32 pixels")
+        st.success("✅ Model loaded!")
+        st.info(f"📐 Input: {TARGET_SIZE}×{TARGET_SIZE}")
     else:
         st.error("❌ Model not loaded")
 

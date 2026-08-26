@@ -135,11 +135,35 @@ def preprocess_image(image):
     return digit_resized, normalized
 
 # --------------------------------------------------
+# Reset session state for new image
+# --------------------------------------------------
+
+def reset_image_state():
+    """Reset all image-related session state variables."""
+    st.session_state.original_image = None
+    st.session_state.rotated_image = None
+    st.session_state.angle = 0
+    st.session_state.last_uploaded_file = None
+
+# --------------------------------------------------
 # User interface
 # --------------------------------------------------
 
 st.title("🔢 Handwritten Digit Recognition")
 st.markdown("Upload an image of a handwritten digit (0-9)")
+
+# --------------------------------------------------
+# Initialize session state
+# --------------------------------------------------
+
+if 'original_image' not in st.session_state:
+    st.session_state.original_image = None
+if 'rotated_image' not in st.session_state:
+    st.session_state.rotated_image = None
+if 'angle' not in st.session_state:
+    st.session_state.angle = 0
+if 'last_uploaded_file' not in st.session_state:
+    st.session_state.last_uploaded_file = None
 
 # --------------------------------------------------
 # Image upload
@@ -151,32 +175,34 @@ uploaded_file = st.file_uploader(
     help="Upload a clear image of a single handwritten digit"
 )
 
-# Initialize session state for image rotation
-if 'rotated_image' not in st.session_state:
-    st.session_state.rotated_image = None
-if 'angle' not in st.session_state:
-    st.session_state.angle = 0
-if 'original_image' not in st.session_state:
-    st.session_state.original_image = None
-
 # --------------------------------------------------
-# Process uploaded image
+# Handle new upload
 # --------------------------------------------------
 
 if uploaded_file is not None:
-    # Load the original image - NO auto-rotation!
-    original_image = Image.open(uploaded_file)
-    
-    # Convert to RGB (fixes any orientation issues)
-    if original_image.mode != 'RGB':
-        original_image = original_image.convert('RGB')
-    
-    # Store original in session state if not already stored
-    if st.session_state.original_image is None:
+    # Check if this is a new file (different from last uploaded)
+    if st.session_state.last_uploaded_file != uploaded_file.name:
+        # New file uploaded - reset everything
+        reset_image_state()
+        st.session_state.last_uploaded_file = uploaded_file.name
+        
+        # Load the new image
+        original_image = Image.open(uploaded_file)
+        if original_image.mode != 'RGB':
+            original_image = original_image.convert('RGB')
+        
         st.session_state.original_image = original_image.copy()
         st.session_state.rotated_image = original_image.copy()
         st.session_state.angle = 0
-    
+        
+        # Rerun to update the display
+        st.rerun()
+
+# --------------------------------------------------
+# Process and display image
+# --------------------------------------------------
+
+if st.session_state.rotated_image is not None:
     # Display image with rotation controls
     col1, col2, col3 = st.columns([1, 2, 1])
     
@@ -203,26 +229,28 @@ if uploaded_file is not None:
     
     with rot_col3:
         if st.button("🔄 Reset", use_container_width=True):
-            st.session_state.rotated_image = st.session_state.original_image.copy()
-            st.session_state.angle = 0
-            st.rerun()
+            if st.session_state.original_image is not None:
+                st.session_state.rotated_image = st.session_state.original_image.copy()
+                st.session_state.angle = 0
+                st.rerun()
     
     with rot_col4:
         if st.button("📐 Auto Rotate", use_container_width=True):
-            # Detect if digit is sideways
-            img_array = np.array(st.session_state.rotated_image.convert('L'))
-            _, thresh = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            if contours:
-                contour = max(contours, key=cv2.contourArea)
-                x, y, w, h = cv2.boundingRect(contour)
+            if st.session_state.rotated_image is not None:
+                # Detect if digit is sideways
+                img_array = np.array(st.session_state.rotated_image.convert('L'))
+                _, thresh = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 
-                # If digit is wider than tall, rotate to make it upright
-                if w > h * 1.2:
-                    st.session_state.rotated_image = st.session_state.rotated_image.rotate(-90, expand=True)
-                    st.session_state.angle = (st.session_state.angle - 90) % 360
-                    st.rerun()
+                if contours:
+                    contour = max(contours, key=cv2.contourArea)
+                    x, y, w, h = cv2.boundingRect(contour)
+                    
+                    # If digit is wider than tall, rotate to make it upright
+                    if w > h * 1.2:
+                        st.session_state.rotated_image = st.session_state.rotated_image.rotate(-90, expand=True)
+                        st.session_state.angle = (st.session_state.angle - 90) % 360
+                        st.rerun()
     
     # Show current rotation
     if st.session_state.angle != 0:
@@ -317,9 +345,7 @@ if uploaded_file is not None:
                 
                 with col1:
                     if st.button("🔄 Process Another", use_container_width=True):
-                        st.session_state.original_image = None
-                        st.session_state.rotated_image = None
-                        st.session_state.angle = 0
+                        reset_image_state()
                         st.rerun()
                 
                 with col2:
@@ -339,11 +365,34 @@ if uploaded_file is not None:
                 
                 with col3:
                     if st.button("🔄 New Image", use_container_width=True):
+                        reset_image_state()
                         st.rerun()
                         
             except Exception as e:
                 st.error(f"❌ Error during prediction: {str(e)}")
                 st.info("Please check if the model is properly loaded and expects 32x32 input.")
+
+# --------------------------------------------------
+# Show instructions when no image is loaded
+# --------------------------------------------------
+
+else:
+    st.info("👆 Upload an image to get started!")
+    
+    # Show example of what to upload
+    with st.expander("📸 What kind of image should I upload?"):
+        st.markdown("""
+            **Best practices:**
+            - ✍️ Handwritten digit (0-9) on **white paper**
+            - 🖊️ Use **dark ink** (black or dark blue)
+            - 📏 Digit should be **centered** in the image
+            - 💡 Good **lighting** with no shadows
+            - 📐 Image can be any size (app will resize)
+            - 🚫 Avoid multiple digits or text
+            - 🖼️ Use **simple fonts** (not cursive)
+            
+            **File formats supported:** JPG, JPEG, PNG, BMP, TIFF
+        """)
 
 # --------------------------------------------------
 # Sidebar information
@@ -382,6 +431,12 @@ with st.sidebar:
         st.info(f"📐 Input size: {TARGET_SIZE}×{TARGET_SIZE} pixels")
     else:
         st.error("❌ Model not loaded")
+    
+    st.divider()
+    
+    # Show current file info
+    if st.session_state.last_uploaded_file:
+        st.caption(f"📎 Current: {st.session_state.last_uploaded_file}")
 
 # --------------------------------------------------
 # Footer

@@ -2,9 +2,8 @@ import streamlit as st
 import tensorflow as tf
 import numpy as np
 import cv2
-from PIL import Image, ImageOps
-import matplotlib.pyplot as plt
-import io
+from PIL import Image
+import pandas as pd
 
 # --------------------------------------------------
 # Page configuration
@@ -22,23 +21,29 @@ st.set_page_config(
 
 st.markdown("""
     <style>
-    .stButton button {
-        width: 100%;
-        background-color: #4CAF50;
-        color: white;
+    .big-digit {
+        font-size: 72px;
         font-weight: bold;
-    }
-    .prediction-box {
-        padding: 20px;
-        border-radius: 10px;
-        background-color: #f0f2f6;
         text-align: center;
+        padding: 20px;
+        background: #f0f2f6;
+        border-radius: 10px;
         margin: 10px 0;
     }
-    .digit-display {
-        font-size: 80px;
+    .confidence-high {
+        color: #00cc00;
         font-weight: bold;
-        color: #1f77b4;
+    }
+    .confidence-medium {
+        color: #ffaa00;
+        font-weight: bold;
+    }
+    .confidence-low {
+        color: #ff4444;
+        font-weight: bold;
+    }
+    .stButton button {
+        width: 100%;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -50,7 +55,8 @@ st.markdown("""
 @st.cache_resource
 def load_model():
     try:
-        return tf.keras.models.load_model("handwritten_digit_cnn.keras")
+        model = tf.keras.models.load_model("handwritten_digit_cnn.keras")
+        return model
     except:
         st.error("⚠️ Model file not found! Please ensure 'handwritten_digit_cnn.keras' exists.")
         return None
@@ -58,32 +64,29 @@ def load_model():
 model = load_model()
 
 # --------------------------------------------------
-# Preprocess image (IMPROVED)
+# Improved image preprocessing
 # --------------------------------------------------
 
-def preprocess_image(image, auto_crop=True, padding_ratio=0.25):
+def preprocess_image(image):
     """
-    Convert uploaded image into the same format used during CNN training.
+    Convert uploaded image to the format expected by the CNN model.
     """
-    # Convert PIL image to RGB
-    image = image.convert("RGB")
+    # Convert to RGB (in case of RGBA)
+    if image.mode == 'RGBA':
+        image = image.convert('RGB')
     
-    # Convert PIL -> NumPy
+    # Convert PIL to numpy array
     image_np = np.array(image)
     
-    # RGB -> grayscale
+    # Convert to grayscale
     gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
     
-    # Improve contrast using CLAHE (better than simple normalization)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    gray = clahe.apply(gray)
-    
     # Apply Gaussian blur to reduce noise
-    gray_blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
-    # Adaptive thresholding (better for different lighting conditions)
+    # Use adaptive thresholding for better results with varying lighting
     thresh = cv2.adaptiveThreshold(
-        gray_blurred,
+        blurred,
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV,
@@ -91,196 +94,179 @@ def preprocess_image(image, auto_crop=True, padding_ratio=0.25):
         2
     )
     
-    # Optionally, use Otsu as fallback
-    if np.count_nonzero(thresh) < 50:  # If adaptive threshold fails
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    
-    if not auto_crop:
-        # Just resize the whole image
-        processed = cv2.resize(thresh, (28, 28), interpolation=cv2.INTER_AREA)
-        processed = processed.astype(np.float32) / 255.0
-        processed = processed.reshape(1, 28, 28, 1)
-        return thresh, processed
-    
     # Find contours
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     if len(contours) == 0:
-        return None, None
+        # Fallback: try Otsu thresholding
+        _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if len(contours) == 0:
+            return None, None
     
-    # Find largest contour
+    # Get the largest contour (the digit)
     contour = max(contours, key=cv2.contourArea)
     x, y, w, h = cv2.boundingRect(contour)
     
-    # Add small margin if contour touches border
+    # Add small margin to avoid cutting off the digit
     margin = 2
     x = max(0, x - margin)
     y = max(0, y - margin)
     w = min(thresh.shape[1] - x, w + 2 * margin)
     h = min(thresh.shape[0] - y, h + 2 * margin)
     
-    # Crop digit
+    # Crop the digit
     digit = thresh[y:y+h, x:x+w]
     
-    # Add padding
-    padding = int(max(w, h) * padding_ratio)
+    # Add padding around the digit
+    padding = int(max(w, h) * 0.25)
     digit = cv2.copyMakeBorder(
         digit,
-        padding, padding, padding, padding,
+        padding,
+        padding,
+        padding,
+        padding,
         cv2.BORDER_CONSTANT,
         value=0
     )
     
-    # Resize while keeping proportions
-    h2, w2 = digit.shape
-    scale = 28 / max(h2, w2)
-    new_w = max(1, int(w2 * scale))
-    new_h = max(1, int(h2 * scale))
+    # Resize to 28x28 while maintaining aspect ratio
+    digit_resized = cv2.resize(digit, (28, 28), interpolation=cv2.INTER_AREA)
     
-    digit_resized = cv2.resize(
-        digit,
-        (new_w, new_h),
-        interpolation=cv2.INTER_AREA
-    )
+    # Normalize to [0, 1]
+    normalized = digit_resized.astype(np.float32) / 255.0
     
-    # Put in 32x32 canvas
-    canvas = np.zeros((32, 32), dtype=np.uint8)
-    start_x = (32 - new_w) // 2
-    start_y = (32 - new_h) // 2
-    canvas[start_y:start_y + new_h, start_x:start_x + new_w] = digit_resized
+    # Reshape for CNN input (batch_size, height, width, channels)
+    normalized = normalized.reshape(1, 28, 28, 1)
     
-    # Normalize to [0, 1] and reshape for CNN
-    normalized = canvas.astype(np.float32) / 255.0
-    normalized = normalized.reshape(1, 32, 32, 1)
-    
-    return canvas, normalized
-
-# --------------------------------------------------
-# Plot probability distribution
-# --------------------------------------------------
-
-def plot_probabilities(probabilities):
-    fig, ax = plt.subplots(figsize=(8, 4))
-    digits = range(10)
-    colors = ['#1f77b4' if i != np.argmax(probabilities) else '#ff7f0e' for i in digits]
-    bars = ax.bar(digits, probabilities * 100, color=colors, alpha=0.7)
-    
-    # Add value labels on top of bars
-    for bar, prob in zip(bars, probabilities * 100):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height,
-                f'{prob:.1f}%', ha='center', va='bottom', fontsize=9)
-    
-    ax.set_xlabel('Digit')
-    ax.set_ylabel('Probability (%)')
-    ax.set_title('Prediction Confidence Distribution')
-    ax.set_xticks(digits)
-    ax.set_ylim(0, 105)
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    # Add horizontal line at 10% (random chance)
-    ax.axhline(y=10, color='red', linestyle='--', alpha=0.5, label='Random chance')
-    ax.legend()
-    
-    return fig
+    return digit_resized, normalized
 
 # --------------------------------------------------
 # User interface
 # --------------------------------------------------
 
 st.title("🔢 Handwritten Digit Recognition")
-st.markdown("### Upload or draw a handwritten digit (0-9)")
+st.markdown("Upload an image of a handwritten digit (0-9)")
 
-# Create tabs for different input methods
-tab1, tab2, tab3 = st.tabs(["📤 Upload Image", "🎨 Draw Digit", "📸 Camera"])
+# --------------------------------------------------
+# Image upload
+# --------------------------------------------------
 
-with tab1:
-    uploaded_file = st.file_uploader(
-        "Choose an image file",
-        type=["jpg", "jpeg", "png", "bmp", "tiff"],
-        help="Upload an image containing a handwritten digit"
-    )
+uploaded_file = st.file_uploader(
+    "Choose an image",
+    type=["jpg", "jpeg", "png", "bmp", "tiff"],
+    help="Upload a clear image of a single handwritten digit"
+)
 
-with tab2:
-    st.info("🎨 Drawing canvas coming soon! For now, use the upload or camera option.")
-
-with tab3:
-    st.info("📸 Camera input coming soon! For now, use the upload option.")
+# Initialize session state for image rotation
+if 'rotated_image' not in st.session_state:
+    st.session_state.rotated_image = None
+if 'angle' not in st.session_state:
+    st.session_state.angle = 0
 
 # --------------------------------------------------
 # Process uploaded image
 # --------------------------------------------------
 
 if uploaded_file is not None:
-    # Display filename and info
-    st.caption(f"📎 File: {uploaded_file.name} ({uploaded_file.size/1024:.1f} KB)")
+    # Load the original image - NO auto-rotation!
+    original_image = Image.open(uploaded_file)
     
-    # Open image
-    image = Image.open(uploaded_file)
+    # Convert to RGB (this fixes any orientation issues from the file)
+    if original_image.mode != 'RGB':
+        original_image = original_image.convert('RGB')
     
-    # IMPORTANT FIX: Don't auto-rotate based on EXIF
-    # Just convert to RGB and keep orientation as-is
-    image = image.convert("RGB")
+    # Store original in session state if not already stored
+    if 'original_image' not in st.session_state or st.session_state.original_image is None:
+        st.session_state.original_image = original_image.copy()
+        st.session_state.rotated_image = original_image.copy()
+        st.session_state.angle = 0
     
-    # Display original image (without rotation)
+    # Display image with rotation controls
     col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.subheader("📷 Original Image")
-        st.image(image, width=300, use_container_width=True)
-    
-    # Add rotation controls
-    st.subheader("🔄 Image Controls")
-    rotation_col1, rotation_col2, rotation_col3 = st.columns(3)
-    
-    with rotation_col1:
-        if st.button("↺ Rotate Left"):
-            image = image.rotate(90, expand=True)
-            st.rerun()
-    
-    with rotation_col2:
-        if st.button("↻ Rotate Right"):
-            image = image.rotate(-90, expand=True)
-            st.rerun()
-    
-    with rotation_col3:
-        if st.button("🔄 Reset"):
-            image = Image.open(uploaded_file).convert("RGB")
-            st.rerun()
-    
-    # Preprocess with options
-    st.subheader("⚙️ Preprocessing Options")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        auto_crop = st.checkbox("Auto-crop digit", value=True)
     
     with col2:
-        padding_ratio = st.slider("Padding ratio", 0.1, 0.5, 0.25, 0.05)
+        st.subheader("📷 Your Image")
+        st.image(st.session_state.rotated_image, use_container_width=True)
     
-    # Process image
+    # Rotation controls
+    st.subheader("🔄 Adjust Image Rotation")
+    
+    rot_col1, rot_col2, rot_col3, rot_col4 = st.columns(4)
+    
+    with rot_col1:
+        if st.button("↺ 90° Left", use_container_width=True):
+            st.session_state.rotated_image = st.session_state.rotated_image.rotate(90, expand=True)
+            st.session_state.angle = (st.session_state.angle + 90) % 360
+            st.rerun()
+    
+    with rot_col2:
+        if st.button("↻ 90° Right", use_container_width=True):
+            st.session_state.rotated_image = st.session_state.rotated_image.rotate(-90, expand=True)
+            st.session_state.angle = (st.session_state.angle - 90) % 360
+            st.rerun()
+    
+    with rot_col3:
+        if st.button("🔄 Reset", use_container_width=True):
+            st.session_state.rotated_image = st.session_state.original_image.copy()
+            st.session_state.angle = 0
+            st.rerun()
+    
+    with rot_col4:
+        if st.button("📐 Auto Rotate", use_container_width=True):
+            # Try to detect the correct orientation
+            # This uses a simple heuristic: check if the digit is wider than tall
+            img_array = np.array(st.session_state.rotated_image.convert('L'))
+            contours, _ = cv2.findContours(
+                cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1],
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE
+            )
+            
+            if contours:
+                contour = max(contours, key=cv2.contourArea)
+                x, y, w, h = cv2.boundingRect(contour)
+                
+                # If digit is wider than tall, rotate to make it upright
+                if w > h * 1.2:
+                    st.session_state.rotated_image = st.session_state.rotated_image.rotate(-90, expand=True)
+                    st.session_state.angle = (st.session_state.angle - 90) % 360
+                    st.rerun()
+    
+    # Show current rotation
+    if st.session_state.angle != 0:
+        st.caption(f"🔄 Current rotation: {st.session_state.angle}°")
+    
+    # Process the (potentially rotated) image
     with st.spinner("Processing image..."):
-        processed_image, model_input = preprocess_image(image, auto_crop, padding_ratio)
+        processed_image, model_input = preprocess_image(st.session_state.rotated_image)
     
     if processed_image is None:
-        st.error("❌ Could not detect a digit in the image. Please try with a clearer image.")
+        st.error("❌ Could not detect a digit in the image.")
+        st.info("💡 Tips: Use a clear image with good contrast, dark digit on light background.")
         
-        # Show the processed threshold image for debugging
-        st.subheader("🔍 What the model sees")
-        gray = np.array(image.convert('L'))
-        _, thresh_display = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        st.image(thresh_display, width=200, clamp=True)
-        st.caption("This is the thresholded image. If you don't see a clear digit, try a different image.")
-        
+        # Show what the model sees for debugging
+        with st.expander("🔍 Show processing details"):
+            st.write("Try these tips for better results:")
+            st.markdown("""
+                - Use a **white background** with **dark ink**
+                - Center the digit in the image
+                - Make sure the digit is **clearly visible**
+                - Avoid shadows or reflections
+                - Use a **simple font** (not cursive)
+                - Try the **Auto Rotate** button if the digit appears sideways
+            """)
     else:
-        # Show processed image
+        # Show results
         col1, col2 = st.columns(2)
         
         with col1:
             st.subheader("✏️ Processed Digit")
             st.image(processed_image, width=200, clamp=True, use_container_width=False)
-            st.caption(f"Processed to {processed_image.shape[0]}×{processed_image.shape[1]} pixels")
+            st.caption("What the model sees (28x28 pixels)")
         
-        # Prediction
+        # Make prediction
         if model is not None:
             prediction = model.predict(model_input, verbose=0)
             predicted_digit = np.argmax(prediction[0])
@@ -289,59 +275,85 @@ if uploaded_file is not None:
             with col2:
                 st.subheader("🎯 Prediction")
                 
-                # Big digit display
+                # Display confidence with color coding
+                if confidence >= 90:
+                    confidence_class = "confidence-high"
+                    emoji = "🌟"
+                elif confidence >= 70:
+                    confidence_class = "confidence-medium"
+                    emoji = "👍"
+                else:
+                    confidence_class = "confidence-low"
+                    emoji = "🤔"
+                
                 st.markdown(f"""
-                    <div class="prediction-box">
-                        <div>Predicted Digit:</div>
-                        <div class="digit-display">{predicted_digit}</div>
-                        <div style="font-size: 24px; color: {'#4CAF50' if confidence > 80 else '#FFA500' if confidence > 50 else '#FF4444'}">
-                            {confidence:.1f}% Confidence
-                        </div>
+                    <div class="big-digit">{predicted_digit}</div>
+                    <div style="text-align: center; font-size: 20px;">
+                        <span class="{confidence_class}">{emoji} {confidence:.1f}% Confidence</span>
                     </div>
                 """, unsafe_allow_html=True)
         
-        # Show probability distribution
+        # Probability distribution
         st.subheader("📊 Probability Distribution")
-        fig = plot_probabilities(prediction[0])
-        st.pyplot(fig)
-        plt.close(fig)
         
-        # Detailed probability table
-        with st.expander("📋 Detailed Probabilities"):
-            st.write("| Digit | Probability | Bar |")
-            st.write("|-------|------------|-----|")
-            max_prob = np.max(prediction[0])
+        # Create DataFrame
+        prob_df = pd.DataFrame({
+            'Digit': list(range(10)),
+            'Probability (%)': [p * 100 for p in prediction[0]]
+        })
+        
+        # Display bar chart
+        st.bar_chart(prob_df.set_index('Digit'))
+        
+        # Detailed probabilities in an expander
+        with st.expander("📋 View all probabilities"):
+            # Create columns for better display
+            cols = st.columns(5)
             for i, prob in enumerate(prediction[0]):
-                bar_length = int(prob * 100)
-                bar = "█" * min(bar_length, 50)
-                emoji = "⭐" if i == predicted_digit else "  "
-                st.write(f"| {i} {emoji} | {prob*100:.2f}% | {bar} |")
+                col_idx = i % 5
+                with cols[col_idx]:
+                    is_max = i == predicted_digit
+                    st.markdown(f"""
+                        <div style="padding: 5px; background: {'#e6f3ff' if is_max else 'transparent'}; 
+                                    border-radius: 5px; text-align: center;">
+                            <strong>{'⭐ ' if is_max else ''}{i}</strong>
+                            <br>{prob*100:.1f}%
+                        </div>
+                    """, unsafe_allow_html=True)
+                    st.progress(float(prob))
         
-        # Save result button
-        st.download_button(
-            label="📥 Download Result",
-            data=str({
+        # Quick actions
+        st.divider()
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("🔄 Process Another", use_container_width=True):
+                st.session_state.original_image = None
+                st.session_state.rotated_image = None
+                st.session_state.angle = 0
+                st.rerun()
+        
+        with col2:
+            # Create a downloadable result
+            result_json = {
                 "predicted_digit": int(predicted_digit),
                 "confidence": float(confidence),
                 "probabilities": [float(p) for p in prediction[0]]
-            }),
-            file_name=f"prediction_digit_{predicted_digit}.json",
-            mime="application/json"
-        )
+            }
+            st.download_button(
+                label="📥 Download Results",
+                data=str(result_json),
+                file_name=f"digit_prediction_{predicted_digit}.json",
+                mime="application/json",
+                use_container_width=True
+            )
         
-        # Tips for better results
-        with st.expander("💡 Tips for Better Recognition"):
-            st.markdown("""
-                - Use **clear, well-lit** images
-                - Write the digit **boldly** with high contrast
-                - Center the digit in the image
-                - Avoid background noise or text
-                - Use **dark ink on white paper** for best results
-                - Try different padding ratios if the digit is too small or large
-            """)
+        with col3:
+            if st.button("📸 Try Another Image", use_container_width=True):
+                st.rerun()
 
 # --------------------------------------------------
-# Sidebar with information
+# Sidebar information
 # --------------------------------------------------
 
 with st.sidebar:
@@ -350,44 +362,29 @@ with st.sidebar:
     This app uses a **Convolutional Neural Network (CNN)** 
     trained on the MNIST dataset to recognize handwritten digits.
     
-    **Model Architecture:**
-    - CNN with 3 convolutional layers
-    - Max pooling and dropout
-    - Dense layers with ReLU activation
-    - Softmax output for 10 classes
-    
-    **Dataset:** MNIST (60,000 training images)
+    **Model:** CNN trained on 60,000 images
     
     **Accuracy:** ~99%
+    
+    **Input:** 28x28 grayscale images
     """)
     
     st.divider()
     
-    st.header("📌 Instructions")
+    st.header("💡 Tips")
     st.markdown("""
-    1. Upload an image with a digit
-    2. Adjust rotation if needed
-    3. View the processed digit
-    4. See the prediction results
-    5. Download results if needed
+    1. Use **clear, well-lit** images
+    2. Write **boldly** with good contrast
+    3. Center the digit
+    4. Use **dark ink on white paper**
+    5. Use **Auto Rotate** if the digit is sideways
+    6. Avoid multiple digits in one image
     """)
-    
-    st.divider()
-    
-    st.header("🔧 Requirements")
-    st.code("""
-    streamlit>=1.28.0
-    tensorflow>=2.13.0
-    opencv-python
-    numpy
-    pillow
-    matplotlib
-    """, language="text")
     
     st.divider()
     
     if model is not None:
-        st.success("✅ Model loaded successfully!")
+        st.success("✅ Model ready")
     else:
         st.error("❌ Model not loaded")
 
@@ -396,3 +393,4 @@ with st.sidebar:
 # --------------------------------------------------
 
 st.divider()
+st.caption("Made with ❤️ using Streamlit and TensorFlow")

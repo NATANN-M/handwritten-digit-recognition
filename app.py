@@ -1,31 +1,50 @@
 import streamlit as st
+import tensorflow as tf
 import numpy as np
 import cv2
-import tensorflow as tf
-from PIL import Image
+
+from PIL import Image, ImageOps
 
 
+# --------------------------------------------------
+# Page configuration
+# --------------------------------------------------
+
+st.set_page_config(
+    page_title="Handwritten Digit Recognition",
+    page_icon="🔢",
+    layout="centered"
+)
+
+
+# --------------------------------------------------
+# Load model
+# --------------------------------------------------
 
 @st.cache_resource
 def load_model():
-
-    model = tf.keras.models.load_model(
+    return tf.keras.models.load_model(
         "handwritten_digit_cnn.keras"
     )
-
-    return model
 
 
 model = load_model()
 
 
-# ==========================================
-# Preprocess uploaded image
-# ==========================================
+# --------------------------------------------------
+# Preprocess image
+# --------------------------------------------------
 
 def preprocess_image(image):
+    """
+    Convert uploaded image into the same format
+    used during CNN training.
+    """
 
-    # PIL image -> NumPy
+    # Convert PIL image to RGB
+    image = image.convert("RGB")
+
+    # Convert PIL -> NumPy
     image = np.array(image)
 
     # RGB -> grayscale
@@ -34,202 +53,155 @@ def preprocess_image(image):
         cv2.COLOR_RGB2GRAY
     )
 
-  
+    # --------------------------------------------------
+    # Improve contrast
+    # --------------------------------------------------
 
-    clahe = cv2.createCLAHE(
-        clipLimit=2.0,
-        tileGridSize=(8, 8)
-    )
-
-    enhanced = clahe.apply(gray)
-
-
-    binary = cv2.adaptiveThreshold(
-        enhanced,
+    gray = cv2.normalize(
+        gray,
+        None,
+        0,
         255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV,
-        51,
-        10
+        cv2.NORM_MINMAX
     )
 
+    # --------------------------------------------------
+    # Threshold
+    # --------------------------------------------------
 
-    kernel = np.ones(
-        (3, 3),
-        np.uint8
+    _, thresh = cv2.threshold(
+        gray,
+        0,
+        255,
+        cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
     )
 
-    clean = cv2.morphologyEx(
-        binary,
-        cv2.MORPH_OPEN,
-        kernel
-    )
-
-
+    # --------------------------------------------------
+    # Find digit
+    # --------------------------------------------------
 
     contours, _ = cv2.findContours(
-        clean,
+        thresh,
         cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE
     )
 
-    image_height, image_width = clean.shape
-
-    image_area = (
-        image_height * image_width
-    )
-
-    candidates = []
-
-    for contour in contours:
-
-        area = cv2.contourArea(contour)
-
-        x, y, w, h = cv2.boundingRect(
-            contour
-        )
-
-        box_area = w * h
-
-        # Ignore very small objects
-        if area < 100:
-            continue
-
-        # Ignore huge background regions
-        if box_area > image_area * 0.50:
-            continue
-
-        # Ignore very small boxes
-        if w < 10 or h < 10:
-            continue
-
-        # Ignore extremely thin objects
-        aspect_ratio = w / h
-
-        if aspect_ratio > 10 or aspect_ratio < 0.1:
-            continue
-
-        candidates.append(
-            (area, x, y, w, h)
-        )
-
-    # No digit detected
-    if len(candidates) == 0:
-
+    if len(contours) == 0:
         return None, None
 
-    # Largest meaningful contour
-    candidates.sort(
-        key=lambda item: item[0],
-        reverse=True
+    # Find the largest contour
+    contour = max(
+        contours,
+        key=cv2.contourArea
     )
 
-    area, x, y, w, h = candidates[0]
+    x, y, w, h = cv2.boundingRect(contour)
 
- 
-    padding = int(
-        max(w, h) * 0.15
-    )
+    # --------------------------------------------------
+    # Crop digit
+    # --------------------------------------------------
 
-    x1 = max(
-        0,
-        x - padding
-    )
-
-    y1 = max(
-        0,
-        y - padding
-    )
-
-    x2 = min(
-        image_width,
-        x + w + padding
-    )
-
-    y2 = min(
-        image_height,
-        y + h + padding
-    )
-
-    cropped = enhanced[
-        y1:y2,
-        x1:x2
+    digit = thresh[
+        y:y + h,
+        x:x + w
     ]
 
+    # --------------------------------------------------
+    # Add padding
+    # --------------------------------------------------
 
-    height, width = cropped.shape
-
-    size = max(
-        height,
-        width
+    padding = int(
+        max(w, h) * 0.25
     )
 
-    square = np.zeros(
-        (size, size),
-        dtype=np.uint8
+    digit = cv2.copyMakeBorder(
+        digit,
+        padding,
+        padding,
+        padding,
+        padding,
+        cv2.BORDER_CONSTANT,
+        value=0
     )
 
-    y_offset = (
-        size - height
-    ) // 2
+    # --------------------------------------------------
+    # Resize while keeping digit proportions
+    # --------------------------------------------------
 
-    x_offset = (
-        size - width
-    ) // 2
+    h2, w2 = digit.shape
 
-    square[
-        y_offset:y_offset + height,
-        x_offset:x_offset + width
-    ] = cropped
+    scale = 28 / max(
+        h2,
+        w2
+    )
 
-  
+    new_w = max(
+        1,
+        int(w2 * scale)
+    )
 
-    resized = cv2.resize(
-        square,
-        (32, 32),
+    new_h = max(
+        1,
+        int(h2 * scale)
+    )
+
+    digit = cv2.resize(
+        digit,
+        (new_w, new_h),
         interpolation=cv2.INTER_AREA
     )
 
+    # --------------------------------------------------
+    # Put digit in 32x32 canvas
+    # --------------------------------------------------
 
-
-    normalized = (
-        resized.astype(np.float32)
-        / 255.0
+    canvas = np.zeros(
+        (32, 32),
+        dtype=np.uint8
     )
 
-  
+    start_x = (32 - new_w) // 2
+    start_y = (32 - new_h) // 2
 
-    model_input = normalized.reshape(
+    canvas[
+        start_y:start_y + new_h,
+        start_x:start_x + new_w
+    ] = digit
+
+    # --------------------------------------------------
+    # Normalize to [0, 1]
+    # --------------------------------------------------
+
+    normalized = canvas.astype(
+        np.float32
+    ) / 255.0
+
+    # Add CNN dimensions
+    normalized = normalized.reshape(
         1,
         32,
         32,
         1
     )
 
-    return model_input, resized
+    return canvas, normalized
 
-# ==========================================
-# Streamlit interface
-# ==========================================
 
-st.set_page_config(
-    page_title="Handwritten Digit Recognition",
-    page_icon="🔢"
-)
+# --------------------------------------------------
+# User interface
+# --------------------------------------------------
 
-st.title(
-    "Handwritten Digit Recognition"
-)
+st.title("Handwritten Digit Recognition")
 
 st.write(
-    "Upload an image of a handwritten digit "
+    "Upload an image containing a handwritten digit "
     "from 0 to 9."
 )
 
 
-# ==========================================
+# --------------------------------------------------
 # Upload image
-# ==========================================
+# --------------------------------------------------
 
 uploaded_file = st.file_uploader(
     "Upload a handwritten digit",
@@ -241,15 +213,37 @@ uploaded_file = st.file_uploader(
 )
 
 
-# ==========================================
-# Process uploaded image
-# ==========================================
-
 if uploaded_file is not None:
+
+    # --------------------------------------------------
+    # Open image
+    # --------------------------------------------------
 
     image = Image.open(
         uploaded_file
-    ).convert("RGB")
+    )
+
+    # --------------------------------------------------
+    # FIX CAMERA EXIF ORIENTATION
+    #
+    # This does NOT force a 90-degree rotation.
+    # It only applies the orientation information
+    # stored by the camera.
+    # --------------------------------------------------
+
+    image = ImageOps.exif_transpose(
+        image
+    )
+
+    # Convert to RGB
+    image = image.convert(
+        "RGB"
+    )
+
+
+    # --------------------------------------------------
+    # Show ORIGINAL image
+    # --------------------------------------------------
 
     st.subheader(
         "Uploaded Image"
@@ -257,90 +251,96 @@ if uploaded_file is not None:
 
     st.image(
         image,
-        width=300
+        width=400
     )
 
-    if st.button(
-        "Recognize Digit"
-    ):
 
-        processed, resized = preprocess_image(
-            image
+    # --------------------------------------------------
+    # Preprocess
+    # --------------------------------------------------
+
+    processed_image, model_input = preprocess_image(
+        image
+    )
+
+
+    # --------------------------------------------------
+    # Check whether digit was detected
+    # --------------------------------------------------
+
+    if processed_image is None:
+
+        st.error(
+            "Could not detect a digit in the image."
         )
 
-        if processed is None:
+    else:
 
-            st.error(
-                "Could not detect a digit "
-                "in the uploaded image."
+        # --------------------------------------------------
+        # Show processed image
+        # --------------------------------------------------
+
+        st.subheader(
+            "Processed Image"
+        )
+
+        st.image(
+            processed_image,
+            width=300,
+            clamp=True
+        )
+
+
+        # --------------------------------------------------
+        # Prediction
+        # --------------------------------------------------
+
+        prediction = model.predict(
+            model_input,
+            verbose=0
+        )
+
+        predicted_digit = np.argmax(
+            prediction[0]
+        )
+
+        confidence = (
+            np.max(prediction[0]) * 100
+        )
+
+
+        # --------------------------------------------------
+        # Display result
+        # --------------------------------------------------
+
+        st.subheader(
+            "Prediction"
+        )
+
+        st.success(
+            f"Predicted Digit: {predicted_digit}"
+        )
+
+        st.info(
+            f"Confidence: {confidence:.2f}%"
+        )
+
+
+        # --------------------------------------------------
+        # Show probabilities
+        # --------------------------------------------------
+
+        st.subheader(
+            "Prediction Probabilities"
+        )
+
+        probabilities = prediction[0]
+
+        for digit, probability in enumerate(
+            probabilities
+        ):
+
+            st.write(
+                f"Digit {digit}: "
+                f"{probability * 100:.2f}%"
             )
-
-        else:
-
-            # ==================================
-            # Show processed image
-            # ==================================
-
-            st.subheader(
-                "Processed Image"
-            )
-
-            st.image(
-                resized,
-                width=200
-            )
-
-            # ==================================
-            # Predict
-            # ==================================
-
-            predictions = model.predict(
-                processed,
-                verbose=0
-            )
-
-            predicted_digit = int(
-                np.argmax(
-                    predictions[0]
-                )
-            )
-
-            confidence = float(
-                np.max(
-                    predictions[0]
-                )
-            )
-
-            # ==================================
-            # Result
-            # ==================================
-
-            st.success(
-                f"Predicted Digit: {predicted_digit}"
-            )
-
-            st.info(
-                f"Confidence: "
-                f"{confidence * 100:.2f}%"
-            )
-
-            # ==================================
-            # All probabilities
-            # ==================================
-
-            st.subheader(
-                "Prediction Probabilities"
-            )
-
-            for digit, probability in enumerate(
-                predictions[0]
-            ):
-
-                st.write(
-                    f"Digit {digit}: "
-                    f"{probability * 100:.2f}%"
-                )
-
-                st.progress(
-                    float(probability)
-                )

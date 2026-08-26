@@ -1,30 +1,171 @@
-import streamlit as st
-import tensorflow as tf
+import os
+import io
+import base64
+import json
 import numpy as np
 import cv2
-from PIL import Image, ImageOps
 import pandas as pd
-import json
-
-# Try importing drawable canvas, handle gracefully if not installed
-try:
-    from streamlit_drawable_canvas import st_canvas
-    CANVAS_AVAILABLE = True
-except ImportError:
-    CANVAS_AVAILABLE = False
+from PIL import Image
+import streamlit as st
+import streamlit.components.v1 as components
+import tensorflow as tf
 
 # --------------------------------------------------
 # Page configuration
 # --------------------------------------------------
 
 st.set_page_config(
-    page_title="Handwritten Digit AI",
+    page_title="Handwritten Digit Recognition",
     page_icon="🔢",
     layout="centered"
 )
 
 # --------------------------------------------------
-# Custom CSS for Modern UI
+# Custom Pure JS Canvas Component Generator
+# --------------------------------------------------
+
+COMPONENT_DIR = "custom_canvas"
+os.makedirs(COMPONENT_DIR, exist_ok=True)
+INDEX_HTML = os.path.join(COMPONENT_DIR, "index.html")
+
+HTML_CODE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://cdn.jsdelivr.net/npm/streamlit-component-lib@1.4.0/dist/streamlit-component-lib.js"></script>
+    <style>
+        body { 
+            margin: 0; 
+            padding: 0; 
+            background: transparent; 
+            font-family: system-ui, -apple-system, sans-serif; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+        }
+        #canvas { 
+            border: 2px solid #3b82f6; 
+            border-radius: 12px; 
+            background: #000000; 
+            cursor: crosshair; 
+            touch-action: none; 
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); 
+        }
+        .controls { 
+            margin-top: 12px; 
+            display: flex; 
+            gap: 10px; 
+            width: 280px; 
+        }
+        .btn-clear { 
+            width: 100%; 
+            padding: 10px; 
+            background: #ef4444; 
+            color: white; 
+            border: none; 
+            border-radius: 8px; 
+            font-weight: bold; 
+            cursor: pointer; 
+            transition: background 0.2s; 
+        }
+        .btn-clear:hover { background: #dc2626; }
+    </style>
+</head>
+<body>
+    <canvas id="canvas" width="280" height="280"></canvas>
+    <div class="controls">
+        <button class="btn-clear" id="clearBtn">🗑️ Clear Canvas</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const clearBtn = document.getElementById('clearBtn');
+        let isDrawing = false;
+
+        // Black background, thick white stroke for digit CNN
+        ctx.fillStyle = "#000000";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = "#FFFFFF";
+        ctx.lineWidth = 20;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+
+        function sendDataToPython() {
+            const dataUrl = canvas.toDataURL('image/png');
+            Streamlit.setComponentValue(dataUrl);
+        }
+
+        function getPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            return { x: clientX - rect.left, y: clientY - rect.top };
+        }
+
+        function startDrawing(e) {
+            isDrawing = true;
+            ctx.beginPath();
+            const pos = getPos(e);
+            ctx.moveTo(pos.x, pos.y);
+            e.preventDefault();
+        }
+
+        function draw(e) {
+            if (!isDrawing) return;
+            const pos = getPos(e);
+            ctx.lineTo(pos.x, pos.y);
+            ctx.stroke();
+            e.preventDefault();
+        }
+
+        function stopDrawing(e) {
+            if (isDrawing) {
+                isDrawing = false;
+                ctx.closePath();
+                sendDataToPython();
+            }
+        }
+
+        canvas.addEventListener('mousedown', startDrawing);
+        canvas.addEventListener('mousemove', draw);
+        canvas.addEventListener('mouseup', stopDrawing);
+        canvas.addEventListener('mouseleave', stopDrawing);
+
+        canvas.addEventListener('touchstart', startDrawing);
+        canvas.addEventListener('touchmove', draw);
+        canvas.addEventListener('touchend', stopDrawing);
+
+        clearBtn.addEventListener('click', () => {
+            ctx.fillStyle = "#000000";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            Streamlit.setComponentValue(null);
+        });
+
+        Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, () => {
+            Streamlit.setFrameHeight(340);
+        });
+    </script>
+</body>
+</html>
+"""
+
+with open(INDEX_HTML, "w", encoding="utf-8") as f:
+    f.write(HTML_CODE)
+
+# Register custom component
+custom_digit_canvas = components.declare_component("digit_canvas", path=COMPONENT_DIR)
+
+def base64_to_pil(base64_str):
+    """Convert canvas Base64 string to PIL Image."""
+    if not base64_str or not base64_str.startswith("data:image"):
+        return None
+    encoded_data = base64_str.split(",", 1)[1]
+    image_bytes = base64.b64decode(encoded_data)
+    return Image.open(io.BytesIO(image_bytes))
+
+# --------------------------------------------------
+# Custom Modern CSS
 # --------------------------------------------------
 
 st.markdown("""
@@ -33,12 +174,12 @@ st.markdown("""
         background-color: var(--background-secondary-color, #f8f9fa);
         border: 2px solid var(--border-color, #e0e0e0);
         border-radius: 12px;
-        padding: 24px;
+        padding: 20px;
         text-align: center;
         margin-bottom: 15px;
     }
     .big-digit {
-        font-size: 80px;
+        font-size: 76px;
         font-weight: 800;
         line-height: 1;
         color: var(--text-color, #1f2937);
@@ -48,7 +189,7 @@ st.markdown("""
         padding: 6px 16px;
         border-radius: 20px;
         font-weight: 600;
-        font-size: 16px;
+        font-size: 15px;
         margin-top: 10px;
     }
     .conf-high { background-color: #d1fae5; color: #065f46; }
@@ -58,21 +199,21 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --------------------------------------------------
-# Load model
+# Load Model
 # --------------------------------------------------
 
 TARGET_SIZE = 32
 
 @st.cache_resource
-def load_digit_model():
+def load_model():
     try:
         model = tf.keras.models.load_model("handwritten_digit_cnn.keras")
         return model
     except Exception as e:
-        st.error(f"⚠️ Error loading model file (`handwritten_digit_cnn.keras`): {str(e)}")
+        st.error(f"⚠️ Error loading model: {str(e)}")
         return None
 
-model = load_digit_model()
+model = load_model()
 
 # --------------------------------------------------
 # Preprocessing Engine
@@ -80,11 +221,10 @@ model = load_digit_model()
 
 def preprocess_image(image, is_inverted=False):
     """
-    Convert image to 32x32 format expected by the CNN model.
-    Handles both dark-on-light and light-on-dark images.
+    Preprocess image to 32x32 array for CNN model.
+    Handles both photo uploads (dark on light) and canvas drawings (light on dark).
     """
     if image.mode == 'RGBA':
-        # Create white background for transparent PNGs
         bg = Image.new('RGB', image.size, (255, 255, 255))
         bg.paste(image, mask=image.split()[3])
         image = bg
@@ -134,10 +274,10 @@ def preprocess_image(image, is_inverted=False):
     
     return digit_resized, normalized
 
-def display_prediction_results(processed_img, model_input):
-    """Renders the prediction results UI card & charts."""
+def render_prediction_results(processed_img, model_input):
+    """Displays prediction visualization, metrics, and distribution chart."""
     if model is None:
-        st.warning("Model is not loaded. Cannot generate predictions.")
+        st.warning("Model is not loaded. Cannot run prediction.")
         return
 
     prediction = model.predict(model_input, verbose=0)[0]
@@ -148,7 +288,7 @@ def display_prediction_results(processed_img, model_input):
 
     with col_preview:
         with st.container(border=True):
-            st.markdown("**🔬 Input View (32×32)**")
+            st.markdown("**🔬 Processed Input (32×32)**")
             st.image(processed_img, use_container_width=True)
 
     with col_pred:
@@ -161,7 +301,7 @@ def display_prediction_results(processed_img, model_input):
 
         st.markdown(f"""
             <div class="big-digit-card">
-                <div style="font-size: 14px; color: #6b7280; text-transform: uppercase; letter-spacing: 1px;">Predicted Digit</div>
+                <div style="font-size: 13px; color: #6b7280; text-transform: uppercase; letter-spacing: 1px;">Prediction</div>
                 <div class="big-digit">{predicted_digit}</div>
                 <div class="confidence-badge {badge_class}">{emoji} ({confidence:.1f}%)</div>
             </div>
@@ -176,8 +316,8 @@ def display_prediction_results(processed_img, model_input):
     
     st.bar_chart(prob_df, height=220)
 
-    # Detailed breakdown expander
-    with st.expander("📋 Detailed Breakdown"):
+    # Detailed probabilities expander
+    with st.expander("📋 View All Probabilities"):
         cols = st.columns(5)
         for i, prob in enumerate(prediction):
             with cols[i % 5]:
@@ -187,14 +327,14 @@ def display_prediction_results(processed_img, model_input):
                     value=f"{prob*100:.1f}%"
                 )
 
-    # Download result
+    # Json Download
     result_data = {
         "predicted_digit": predicted_digit,
         "confidence": confidence,
         "probabilities": prediction.tolist()
     }
     st.download_button(
-        label="📥 Download Prediction Result (JSON)",
+        label="📥 Download Result (JSON)",
         data=json.dumps(result_data, indent=2),
         file_name=f"digit_prediction_{predicted_digit}.json",
         mime="application/json",
@@ -202,27 +342,27 @@ def display_prediction_results(processed_img, model_input):
     )
 
 # --------------------------------------------------
-# Header & UI Tabs
+# UI Layout
 # --------------------------------------------------
 
 st.title("🔢 Handwritten Digit Classifier")
-st.caption("Classify digits (0–9) using a 32x32 Convolutional Neural Network")
+st.caption("Classify handwritten digits using a 32x32 Convolutional Neural Network")
 
 tab_upload, tab_draw = st.tabs(["📤 Upload Image", "✍️ Draw Digit"])
 
 # --------------------------------------------------
-# TAB 1: Upload Image Mode
+# TAB 1: Image Upload
 # --------------------------------------------------
 
 with tab_upload:
     uploaded_file = st.file_uploader(
         "Choose an image file",
-        type=["jpg", "jpeg", "png", "bmp", "webp"],
-        help="Upload a clear picture of a single digit on a clean background."
+        type=["jpg", "jpeg", "png", "bmp", "tiff", "webp"],
+        help="Upload a clear image of a single digit"
     )
 
     if uploaded_file is not None:
-        # Detect new image upload automatically & update state
+        # Automatic state refresh on new image upload
         file_key = f"{uploaded_file.name}_{uploaded_file.size}"
         if st.session_state.get('current_file_key') != file_key:
             st.session_state.current_file_key = file_key
@@ -262,72 +402,55 @@ with tab_upload:
                             st.session_state.angle = (st.session_state.angle - 90) % 360
                             st.rerun()
 
-        # Display image preview
         st.image(st.session_state.rotated_image, caption="Uploaded Image Preview", use_container_width=True)
 
-        # Process image and display prediction
-        processed_img, model_input = preprocess_image(st.session_state.rotated_image)
+        processed_img, model_input = preprocess_image(st.session_state.rotated_image, is_inverted=False)
         if processed_img is None:
-            st.error("❌ Could not detect a clear digit contour in the image.")
+            st.error("❌ Could not detect a digit in the image.")
         else:
             st.divider()
-            display_prediction_results(processed_img, model_input)
+            render_prediction_results(processed_img, model_input)
 
 # --------------------------------------------------
-# TAB 2: Draw Canvas Mode
+# TAB 2: Custom HTML/JS Canvas
 # --------------------------------------------------
 
 with tab_draw:
-    if not CANVAS_AVAILABLE:
-        st.info("💡 To enable live canvas drawing, install `streamlit-drawable-canvas`:")
-        st.code("pip install streamlit-drawable-canvas", language="bash")
-    else:
-        st.markdown("Draw a single digit (0-9) inside the box below:")
-        
-        canvas_col, _ = st.columns([1, 0.01])
-        with canvas_col:
-            canvas_result = st_canvas(
-                fill_color="#000000",
-                stroke_width=18,
-                stroke_color="#FFFFFF",
-                background_color="#000000",
-                height=280,
-                width=280,
-                drawing_mode="freedraw",
-                key="digit_canvas",
-            )
+    st.markdown("Draw a single digit (0-9) inside the box below:")
+    
+    # Trigger native Streamlit JS Component
+    canvas_data_url = custom_digit_canvas(key="my_canvas")
 
-        if canvas_result.image_data is not None:
-            # Extract RGB channels from canvas
-            canvas_img = Image.fromarray(canvas_result.image_data.astype(np.uint8))
-            
-            # Check if user has drawn anything (non-black pixels)
+    if canvas_data_url:
+        canvas_img = base64_to_pil(canvas_data_url)
+        if canvas_img is not None:
             gray_canvas = np.array(canvas_img.convert('L'))
-            if np.max(gray_canvas) > 20:  # Has drawing activity
+            if np.max(gray_canvas) > 20:  # Ensures canvas isn't empty
                 processed_img, model_input = preprocess_image(canvas_img, is_inverted=True)
                 if processed_img is not None:
                     st.divider()
-                    display_prediction_results(processed_img, model_input)
+                    render_prediction_results(processed_img, model_input)
             else:
-                st.info("✍️ Draw a digit above to see real-time predictions.")
+                st.info("✍️ Draw a digit on the canvas above.")
+    else:
+        st.info("✍️ Draw a digit on the canvas above.")
 
 # --------------------------------------------------
-# Sidebar Information
+# Sidebar
 # --------------------------------------------------
 
 with st.sidebar:
-    st.header("ℹ️ Model Information")
+    st.header("ℹ️ Information")
     st.markdown("""
-    * **Architecture:** Convolutional Neural Network (CNN)
+    * **Model Architecture:** CNN
     * **Input Dimension:** 32×32 Grayscale
-    * **Target Classes:** 10 classes (Digits 0 through 9)
+    * **Output:** 10 digit classes (0–9)
     """)
     st.divider()
     if model is not None:
         st.success("✅ Model loaded successfully")
     else:
-        st.error("❌ Model load failed")
+        st.error("❌ Model loading failed")
 
-# Sidebar styling cleanups
 st.divider()
 st.caption("Handwritten Digit Classifier App")

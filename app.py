@@ -21,10 +21,11 @@ st.set_page_config(
 )
 
 # --------------------------------------------------
-# Custom Pure JS Canvas Component Generator
+# Custom Pure JS Canvas Component Generator (Absolute Path Fix)
 # --------------------------------------------------
 
-COMPONENT_DIR = "custom_canvas"
+# Use absolute path to ensure Streamlit server resolves static assets correctly on all environments
+COMPONENT_DIR = os.path.abspath("custom_canvas")
 os.makedirs(COMPONENT_DIR, exist_ok=True)
 INDEX_HTML = os.path.join(COMPONENT_DIR, "index.html")
 
@@ -83,7 +84,7 @@ HTML_CODE = """
         const clearBtn = document.getElementById('clearBtn');
         let isDrawing = false;
 
-        // Black background, thick white stroke for digit CNN
+        // Black background, thick white stroke for CNN
         ctx.fillStyle = "#000000";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.strokeStyle = "#FFFFFF";
@@ -150,10 +151,11 @@ HTML_CODE = """
 </html>
 """
 
+# Write HTML file before registering component
 with open(INDEX_HTML, "w", encoding="utf-8") as f:
     f.write(HTML_CODE)
 
-# Register custom component
+# Register custom component with resolved absolute path
 custom_digit_canvas = components.declare_component("digit_canvas", path=COMPONENT_DIR)
 
 def base64_to_pil(base64_str):
@@ -327,7 +329,7 @@ def render_prediction_results(processed_img, model_input):
                     value=f"{prob*100:.1f}%"
                 )
 
-    # Json Download
+    # JSON Download
     result_data = {
         "predicted_digit": predicted_digit,
         "confidence": confidence,
@@ -362,7 +364,6 @@ with tab_upload:
     )
 
     if uploaded_file is not None:
-        # Automatic state refresh on new image upload
         file_key = f"{uploaded_file.name}_{uploaded_file.size}"
         if st.session_state.get('current_file_key') != file_key:
             st.session_state.current_file_key = file_key
@@ -371,7 +372,6 @@ with tab_upload:
             st.session_state.rotated_image = img.copy()
             st.session_state.angle = 0
 
-        # Image adjustment controls
         with st.expander("🔄 Image Controls & Rotation", expanded=False):
             r_col1, r_col2, r_col3, r_col4 = st.columns(4)
             with r_col1:
@@ -412,20 +412,19 @@ with tab_upload:
             render_prediction_results(processed_img, model_input)
 
 # --------------------------------------------------
-# TAB 2: Custom HTML/JS Canvas
+# TAB 2: Canvas Drawing
 # --------------------------------------------------
 
 with tab_draw:
     st.markdown("Draw a single digit (0-9) inside the box below:")
     
-    # Trigger native Streamlit JS Component
     canvas_data_url = custom_digit_canvas(key="my_canvas")
 
     if canvas_data_url:
         canvas_img = base64_to_pil(canvas_data_url)
         if canvas_img is not None:
             gray_canvas = np.array(canvas_img.convert('L'))
-            if np.max(gray_canvas) > 20:  # Ensures canvas isn't empty
+            if np.max(gray_canvas) > 20:
                 processed_img, model_input = preprocess_image(canvas_img, is_inverted=True)
                 if processed_img is not None:
                     st.divider()
